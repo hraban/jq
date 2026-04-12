@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <assert.h>
 #include <ctype.h>
+#include <err.h>
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #ifdef HAVE_LIBONIG
@@ -23,6 +25,7 @@
 #endif
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #ifdef WIN32
 #include <windows.h>
 #endif
@@ -471,6 +474,7 @@ static jv f_tonumber(jq_state *jq, jv input) {
     }
 #ifdef USE_DECNUM
     jv number = jv_number_with_literal(s);
+
     if (jv_get_kind(number) == JV_KIND_INVALID) {
       return type_error(input, "cannot be parsed as a number");
     }
@@ -486,6 +490,171 @@ static jv f_tonumber(jq_state *jq, jv input) {
     return number;
   }
   return type_error(input, "cannot be parsed as a number");
+}
+
+#define BUF_SIZE 4096
+static char BUF[BUF_SIZE];
+
+/**
+ * After a fork, this function actually execs to the shell, as the child.
+ */
+[[noreturn]] static void exec_child(const int fromsh[2], const int tosh[2], const char *sh) {
+  if (0 != close(1)) {
+    perror("Error closing child stdout");
+    _exit(1);
+  }
+  if (0 != close(0)) {
+    perror("Error closing child stdin");
+    _exit(1);
+  }
+  if (0 != close(fromsh[0])) {
+    perror("Error closing child's own read end");
+    _exit(1);
+  }
+  if (0 != close(tosh[1])) {
+    perror("Error closing parent's write end");
+    _exit(1);
+  }
+  if (-1 == dup2(fromsh[1], 1)) {
+    perror("Error duplicating pipe file descriptor to stdout");
+    _exit(1);
+  }
+  if (0 != close(fromsh[1])) {
+    perror("Error closing original pipe write fd");
+    _exit(1);
+  }
+  if (-1 == dup2(tosh[0], 0)) {
+    perror("Error duplicating pipe file descriptor to stdin");
+    _exit(1);
+  }
+  if (0 != close(tosh[0])) {
+    perror("Error closing original pipe read fd");
+    _exit(1);
+  }
+  execl("/bin/sh", "sh", "-c", sh, NULL);
+  perror("Error executing child command");
+  _exit(1);
+}
+
+static jv f_system(jq_state *jq, jv input, jv sh) {
+  int tosh[2] = {-1, -1};
+  int fromsh[2] = {-1, -1};
+  jv retjv = {}; // Does this actually 0-initialize the struct on the stack?
+
+  if (0 != pipe(tosh)) {
+    retjv = jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): Failed to create TO pipe: "), jv_string(strerror(errno))));
+    goto err;
+  }
+  if (0 != pipe(fromsh)) {
+    retjv = jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): Failed to create FROM pipe: "), jv_string(strerror(errno))));
+    goto err;
+  }
+  pid_t pid = fork();
+  if (pid == -1) {
+    retjv = jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): failed to fork(): "), jv_string(strerror(errno))));
+    goto err;
+  } else if (pid == 0) {
+    // I am child
+    exec_child(fromsh, tosh, jv_string_value(sh));
+  }
+
+  // I am parent
+  if (0 != close(fromsh[1])) {
+    return jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): error closing child's write end: "), jv_string(strerror(errno))));
+  }
+  fromsh[1] = -1;
+  if (0 != close(tosh[0])) {
+    return jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): error closing parent's own read end: "), jv_string(strerror(errno))));
+  }
+  tosh[0] = -1;
+
+  if (-1 == write(tosh[1], jv_string_value(input), jv_string_length_bytes(jv_copy(input)))) {
+    return jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): writing to child: "), jv_string(strerror(errno))));
+  }
+
+  if (0 != close(tosh[1])) {
+    return jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): closing write pipe: "), jv_string(strerror(errno))));
+  }
+  tosh[1] = -1;
+  // Read all the input
+  // Placeholder buffer for eventually casting to jv_string
+  char *tos = NULL;
+  // Last valid byte in the placeholder buffer
+  size_t offset = 0;
+  // Current size of the placeholder buffer
+  size_t capacity = 0;
+  while (1) {
+    // Read from the child
+    int ret = read(fromsh[0], BUF, BUF_SIZE);
+    if (ret == -1) {
+      return jv_invalid_with_msg(jv_string_concat(
+          jv_string("system(): reading from child: "), jv_string(strerror(errno))));
+    } if (ret == 0) {
+      break;
+    }
+    // Copy into our placeholder buffer which is grown exponentially
+    // Am I stupid? Overflow / underflow?
+    if (offset + ret > capacity) {
+      capacity += capacity == 0 ? BUF_SIZE : capacity;
+      void *tmp = realloc(tos, capacity);
+      if (NULL == tmp) {
+        if (tos != NULL) {
+          free(tos);
+        }
+        return jv_invalid_with_msg(jv_string_concat(
+            jv_string("system(): allocating buffer for child data: "), jv_string(strerror(errno))));
+      }
+      tos = tmp;
+    }
+    memcpy(tos + offset, BUF, ret);
+    offset += ret;
+  }
+  if (0 != close(fromsh[0])) {
+    return jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): error closing child read buffer: "), jv_string(strerror(errno))));
+  }
+  // Check exit status of child
+  int status = 0;
+  if (-1 == waitpid(pid, &status, 0)) {
+    return jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): failed to wait for child exit status"), jv_string(strerror(errno))));
+  }
+  if (status != 0) {
+    if (WIFEXITED(status)) {
+      return jv_invalid_with_msg(jv_string_fmt("Child exited with non-0 status: %d", WEXITSTATUS(status)));
+    }
+    if (WIFSIGNALED(status)) {
+      return jv_invalid_with_msg(jv_string_fmt("Child killed by signal: %d", WTERMSIG(status)));
+    }
+    // I think this should never happen?
+    return jv_invalid_with_msg(jv_string("Unexpected child exit condition"));
+  }
+  if (offset == 0) {
+    // .. is this necessary? I’m afraid to call jv_string_sized(NULL, 0)
+    // although it could technically be legal?
+    return jv_string("");
+  }
+  retjv = jv_string_sized(tos, offset);
+
+ err:
+  // Clean up any potentially allocated resources.  Assumes that retjv is
+  // already set.  Any errors encountered here won’t affect the function
+  // outcome, beyond an error message to stderr.
+  if (tosh[0] != -1 && 0 != close(tosh[0])) {
+    perror("system(): failed to clean up read end of TO pipe");
+  }
+  if (tosh[1] != -1 && 0 != close(tosh[1])) {
+    perror("system(): failed to clean up write end of TO pipe");
+  }
+
+  return retjv;
 }
 
 static jv f_toboolean(jq_state *jq, jv input) {
@@ -1980,6 +2149,7 @@ BINOPS
   CFUNC(f_json_parse, "fromjson", 1),
   CFUNC(f_tonumber, "tonumber", 1),
   CFUNC(f_toboolean, "toboolean", 1),
+  CFUNC(f_system, "system", 2),
   CFUNC(f_tostring, "tostring", 1),
   CFUNC(f_keys, "keys", 1),
   CFUNC(f_keys_unsorted, "keys_unsorted", 1),
