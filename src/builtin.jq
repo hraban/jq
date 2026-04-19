@@ -242,3 +242,6 @@ def JOIN($idx; stream; idx_expr; join_expr):
   stream | [., $idx[idx_expr]] | join_expr;
 def IN(s): any(s == .; .);
 def IN(src; s): any(src == s; .);
+
+# Monadic system(): every line on stdout of subcommand becomes an element in pipeline
+def msystem(cmd): system(cmd) | trim | split("\n") | .[];
