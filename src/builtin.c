@@ -18,6 +18,7 @@
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <math.h>
 #ifdef HAVE_LIBONIG
@@ -547,6 +548,11 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
         jv_string("system(): Failed to create TO pipe: "), jv_string(strerror(errno))));
     goto err;
   }
+  if (-1 == fcntl(tosh[1], F_SETFL, fcntl(tosh[1], F_GETFL) | O_NONBLOCK)) {
+    retjv = jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): Failed to mark TO pipe nonblocking: "), jv_string(strerror(errno))));
+    goto err;
+  }
   if (0 != pipe(fromsh)) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): Failed to create FROM pipe: "), jv_string(strerror(errno))));
@@ -606,9 +612,6 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
         if (-1 == written) {
           return jv_invalid_with_msg(jv_string_concat(
               jv_string("system(): writing to child: "), jv_string(strerror(errno))));
-        }
-        if (written != tosh_len) {
-          return jv_invalid_with_msg(jv_string("system(): cannot write full buffer to shell"));
         }
         tosh_len -= written;
         input_b += written;
