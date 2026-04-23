@@ -23,6 +23,7 @@
 #ifdef HAVE_LIBONIG
 #include <oniguruma.h>
 #endif
+#include <poll.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -573,53 +574,89 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
   }
   tosh[0] = -1;
 
-  if (-1 == write(tosh[1], jv_string_value(input), jv_string_length_bytes(jv_copy(input)))) {
-    return jv_invalid_with_msg(jv_string_concat(
-        jv_string("system(): writing to child: "), jv_string(strerror(errno))));
-  }
-
-  if (0 != close(tosh[1])) {
-    return jv_invalid_with_msg(jv_string_concat(
-        jv_string("system(): closing write pipe: "), jv_string(strerror(errno))));
-  }
-  tosh[1] = -1;
-  // Read all the input
+  // Fromsh structures
   // Placeholder buffer for eventually casting to jv_string
   char *tos = NULL;
   // Last valid byte in the placeholder buffer
   size_t offset = 0;
   // Current size of the placeholder buffer
   size_t capacity = 0;
-  while (1) {
-    // Read from the child
-    int ret = read(fromsh[0], BUF, BUF_SIZE);
-    if (ret == -1) {
+
+  const char *input_b = jv_string_value(input);
+  int tosh_len = jv_string_length_bytes(jv_copy(input));
+
+  struct pollfd poll_fds[2];
+  poll_fds[0].fd = fromsh[0];
+  fromsh[0] = -1;
+  poll_fds[0].events = POLLIN;
+  poll_fds[1].fd = tosh[1];
+  tosh[1] = -1;
+  poll_fds[1].events = POLLOUT;
+
+  while (poll_fds[0].fd >= 0 || poll_fds[1].fd >= 0) {
+    int ready = poll(poll_fds, 2, -1);
+    if (-1 == ready) {
       return jv_invalid_with_msg(jv_string_concat(
-          jv_string("system(): reading from child: "), jv_string(strerror(errno))));
-    } if (ret == 0) {
-      break;
+          jv_string("system(): poll(): "), jv_string(strerror(errno))));
     }
-    // Copy into our placeholder buffer which is grown exponentially
-    // Am I stupid? Overflow / underflow?
-    if (offset + ret > capacity) {
-      capacity += capacity == 0 ? BUF_SIZE : capacity;
-      void *tmp = realloc(tos, capacity);
-      if (NULL == tmp) {
-        if (tos != NULL) {
-          free(tos);
+
+    if (poll_fds[1].fd >= 0 && poll_fds[1].revents != 0) {
+      if ((poll_fds[1].revents & POLLOUT) && (0 < tosh_len)) {
+        ssize_t written = write(poll_fds[1].fd, input_b, tosh_len);
+        if (-1 == written) {
+          return jv_invalid_with_msg(jv_string_concat(
+              jv_string("system(): writing to child: "), jv_string(strerror(errno))));
         }
-        return jv_invalid_with_msg(jv_string_concat(
-            jv_string("system(): allocating buffer for child data: "), jv_string(strerror(errno))));
+        if (written != tosh_len) {
+          return jv_invalid_with_msg(jv_string("system(): cannot write full buffer to shell"));
+        }
+        tosh_len -= written;
+        input_b += written;
+      } else {
+        if (0 != close(poll_fds[1].fd)) {
+          return jv_invalid_with_msg(jv_string_concat(
+              jv_string("system(): closing tosh pipe: "), jv_string(strerror(errno))));
+        }
+        poll_fds[1].fd = -1;
       }
-      tos = tmp;
     }
-    memcpy(tos + offset, BUF, ret);
-    offset += ret;
+
+    if (poll_fds[0].fd >= 0 && poll_fds[0].revents != 0) {
+      int ret = 0;
+      if (poll_fds[0].revents & POLLIN) {
+        // Read from the child
+        ret = read(poll_fds[0].fd, BUF, BUF_SIZE);
+        if (ret == -1) {
+          return jv_invalid_with_msg(jv_string_concat(
+              jv_string("system(): reading from child: "), jv_string(strerror(errno))));
+        }
+        // Copy into our placeholder buffer which is grown exponentially
+        // Am I stupid? Overflow / underflow?
+        if (offset + ret > capacity) {
+          capacity += capacity == 0 ? BUF_SIZE : capacity;
+          void *tmp = realloc(tos, capacity);
+          if (NULL == tmp) {
+            if (tos != NULL) {
+              free(tos);
+            }
+            return jv_invalid_with_msg(jv_string_concat(
+                jv_string("system(): allocating buffer for child data: "), jv_string(strerror(errno))));
+          }
+          tos = tmp;
+        }
+        memcpy(tos + offset, BUF, ret);
+        offset += ret;
+      }
+      if (0 == ret) {
+        if (0 != close(poll_fds[0].fd)) {
+          return jv_invalid_with_msg(jv_string_concat(
+              jv_string("system(): closing fromsh pipe: "), jv_string(strerror(errno))));
+        }
+        poll_fds[0].fd = -1;
+      }
+    }
   }
-  if (0 != close(fromsh[0])) {
-    return jv_invalid_with_msg(jv_string_concat(
-        jv_string("system(): error closing child read buffer: "), jv_string(strerror(errno))));
-  }
+
   // Check exit status of child
   int status = 0;
   if (-1 == waitpid(pid, &status, 0)) {
@@ -647,10 +684,10 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
   // Clean up any potentially allocated resources.  Assumes that retjv is
   // already set.  Any errors encountered here won’t affect the function
   // outcome, beyond an error message to stderr.
-  if (tosh[0] != -1 && 0 != close(tosh[0])) {
+  if (poll_fds[0].fd != -1 && 0 != close(poll_fds[0].fd)) {
     perror("system(): failed to clean up read end of TO pipe");
   }
-  if (tosh[1] != -1 && 0 != close(tosh[1])) {
+  if (poll_fds[1].fd != -1 && 0 != close(poll_fds[1].fd)) {
     perror("system(): failed to clean up write end of TO pipe");
   }
 
