@@ -586,17 +586,22 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
   } else if (pid == 0) {
     // I am child
     exec_child(fromsh, tosh, jv_string_value(sh));
+    abort();
   }
 
   // I am parent
   if (0 != close(fromsh[1])) {
-    return jv_invalid_with_msg(jv_string_concat(
-        jv_string("system(): error closing child's write end: "), jv_string(strerror(errno))));
+    retjv = jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): error closing child's write end: "),
+        jv_string(strerror(errno))));
+    goto err;
   }
   fromsh[1] = -1;
   if (0 != close(tosh[0])) {
-    return jv_invalid_with_msg(jv_string_concat(
-        jv_string("system(): error closing parent's own read end: "), jv_string(strerror(errno))));
+    retjv = jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): error closing parent's own read end: "),
+        jv_string(strerror(errno))));
+    goto err;
   }
   tosh[0] = -1;
 
@@ -610,23 +615,28 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
   while (poll_fds[0].fd >= 0 || poll_fds[1].fd >= 0) {
     int ready = poll(poll_fds, 2, -1);
     if (-1 == ready) {
-      return jv_invalid_with_msg(jv_string_concat(
+      retjv = jv_invalid_with_msg(jv_string_concat(
           jv_string("system(): poll(): "), jv_string(strerror(errno))));
+      goto err;
     }
 
     if (poll_fds[1].fd >= 0 && poll_fds[1].revents != 0) {
       if ((poll_fds[1].revents & POLLOUT) && (0 < tosh_len)) {
         ssize_t written = write(poll_fds[1].fd, input_b, tosh_len);
         if (-1 == written) {
-          return jv_invalid_with_msg(jv_string_concat(
-              jv_string("system(): writing to child: "), jv_string(strerror(errno))));
+          retjv = jv_invalid_with_msg(
+              jv_string_concat(jv_string("system(): writing to child: "),
+                               jv_string(strerror(errno))));
+          goto err;
         }
         tosh_len -= written;
         input_b += written;
       } else {
         if (0 != close(poll_fds[1].fd)) {
-          return jv_invalid_with_msg(jv_string_concat(
-              jv_string("system(): closing tosh pipe: "), jv_string(strerror(errno))));
+          retjv = jv_invalid_with_msg(
+              jv_string_concat(jv_string("system(): closing tosh pipe: "),
+                               jv_string(strerror(errno))));
+          goto err;
         }
         poll_fds[1].fd = -1;
       }
@@ -638,8 +648,10 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
         // Read from the child
         ret = read(poll_fds[0].fd, BUF, BUF_SIZE);
         if (ret == -1) {
-          return jv_invalid_with_msg(jv_string_concat(
-              jv_string("system(): reading from child: "), jv_string(strerror(errno))));
+          retjv = jv_invalid_with_msg(
+              jv_string_concat(jv_string("system(): reading from child: "),
+                               jv_string(strerror(errno))));
+          goto err;
         }
         // Copy into our placeholder buffer which is grown exponentially
         // Am I stupid? Overflow / underflow?
@@ -647,11 +659,10 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
           capacity += capacity == 0 ? BUF_SIZE : capacity;
           void *tmp = realloc(tos, capacity);
           if (NULL == tmp) {
-            if (tos != NULL) {
-              free(tos);
-            }
-            return jv_invalid_with_msg(jv_string_concat(
-                jv_string("system(): allocating buffer for child data: "), jv_string(strerror(errno))));
+            retjv = jv_invalid_with_msg(jv_string_concat(
+                jv_string("system(): allocating buffer for child data: "),
+                jv_string(strerror(errno))));
+            goto err;
           }
           tos = tmp;
         }
@@ -660,8 +671,10 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
       }
       if (0 == ret) {
         if (0 != close(poll_fds[0].fd)) {
-          return jv_invalid_with_msg(jv_string_concat(
-              jv_string("system(): closing fromsh pipe: "), jv_string(strerror(errno))));
+          retjv = jv_invalid_with_msg(
+              jv_string_concat(jv_string("system(): closing fromsh pipe: "),
+                               jv_string(strerror(errno))));
+          goto err;
         }
         poll_fds[0].fd = -1;
       }
@@ -671,35 +684,62 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
   // Check exit status of child
   int status = 0;
   if (-1 == waitpid(pid, &status, 0)) {
-    return jv_invalid_with_msg(jv_string_concat(
-        jv_string("system(): failed to wait for child exit status"), jv_string(strerror(errno))));
+    retjv = jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): failed to wait for child exit status"),
+        jv_string(strerror(errno))));
+    goto err;
   }
   if (status != 0) {
     if (WIFEXITED(status)) {
-      return jv_invalid_with_msg(jv_string_fmt("Child exited with non-0 status: %d", WEXITSTATUS(status)));
+      retjv = jv_invalid_with_msg(jv_string_fmt(
+          "Child exited with non-0 status: %d", WEXITSTATUS(status)));
+      goto err;
     }
     if (WIFSIGNALED(status)) {
-      return jv_invalid_with_msg(jv_string_fmt("Child killed by signal: %d", WTERMSIG(status)));
+      retjv = jv_invalid_with_msg(
+          jv_string_fmt("Child killed by signal: %d", WTERMSIG(status)));
+      goto err;
     }
     // I think this should never happen?
-    return jv_invalid_with_msg(jv_string("Unexpected child exit condition"));
+    retjv = jv_invalid_with_msg(jv_string("Unexpected child exit condition"));
+    goto err;
   }
+
+  // Special handling for if the stdout of the subshell was 0 bytes.
   if (offset == 0) {
     // .. is this necessary? I’m afraid to call jv_string_sized(NULL, 0)
     // although it could technically be legal?
-    return jv_string("");
+    retjv = jv_string("");
+  } else {
+    retjv = jv_string_sized(tos, offset);
   }
-  retjv = jv_string_sized(tos, offset);
 
- err:
+err:
+  jv_free(input);
+  jv_free(sh);
   // Clean up any potentially allocated resources.  Assumes that retjv is
   // already set.  Any errors encountered here won’t affect the function
   // outcome, beyond an error message to stderr.
-  if (poll_fds[0].fd != -1 && 0 != close(poll_fds[0].fd)) {
+  if (poll_fds[0].fd != -1) {
+    fromsh[0] = poll_fds[0].fd;
+  }
+  if (fromsh[0] != -1 && 0 != close(fromsh[0])) {
+    perror("system(): failed to clean up read end of FROM pipe");
+  }
+  if (fromsh[1] != -1 && 0 != close(fromsh[1])) {
+    perror("system(): failed to clean up write end of FROM pipe");
+  }
+  if (tosh[0] != -1 && 0 != close(tosh[0])) {
     perror("system(): failed to clean up read end of TO pipe");
   }
-  if (poll_fds[1].fd != -1 && 0 != close(poll_fds[1].fd)) {
+  if (poll_fds[1].fd != -1) {
+    tosh[1] = poll_fds[1].fd;
+  }
+  if (tosh[1] != -1 && 0 != close(tosh[1])) {
     perror("system(): failed to clean up write end of TO pipe");
+  }
+  if (NULL != tos) {
+    free(tos);
   }
 
   return retjv;
