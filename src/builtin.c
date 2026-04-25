@@ -543,6 +543,10 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
   int fromsh[2] = {-1, -1};
   jv retjv = {}; // Does this actually 0-initialize the struct on the stack?
 
+  if (jv_get_kind(input) != JV_KIND_STRING) {
+    return type_error(input, "only strings can be parsed");
+  }
+
   if (0 != pipe(tosh)) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): Failed to create TO pipe: "), jv_string(strerror(errno))));
