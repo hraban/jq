@@ -543,9 +543,25 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
   int fromsh[2] = {-1, -1};
   jv retjv = {}; // Does this actually 0-initialize the struct on the stack?
 
+  // Froms structures
+  // Placeholder buffer for eventually casting to jv_string
+  char *tos = NULL;
+  // Last valid byte in the placeholder buffer
+  size_t offset = 0;
+  // Current size of the placeholder buffer
+  size_t capacity = 0;
+
+  const char *input_b = NULL;
+  int tosh_len = 0;
+
+  struct pollfd poll_fds[2];
+
   if (jv_get_kind(input) != JV_KIND_STRING) {
     return type_error(input, "only strings can be parsed");
   }
+
+  input_b = jv_string_value(input);
+  tosh_len = jv_string_length_bytes(jv_copy(input));
 
   if (0 != pipe(tosh)) {
     retjv = jv_invalid_with_msg(jv_string_concat(
@@ -584,18 +600,6 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
   }
   tosh[0] = -1;
 
-  // Fromsh structures
-  // Placeholder buffer for eventually casting to jv_string
-  char *tos = NULL;
-  // Last valid byte in the placeholder buffer
-  size_t offset = 0;
-  // Current size of the placeholder buffer
-  size_t capacity = 0;
-
-  const char *input_b = jv_string_value(input);
-  int tosh_len = jv_string_length_bytes(jv_copy(input));
-
-  struct pollfd poll_fds[2];
   poll_fds[0].fd = fromsh[0];
   fromsh[0] = -1;
   poll_fds[0].events = POLLIN;
