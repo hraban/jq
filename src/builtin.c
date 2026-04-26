@@ -582,15 +582,17 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
         jv_string("execv: failed to malloc argv: "), jv_string(strerror(errno))));
     goto err;
   }
-  for (int i = 0; i < argc; i++) {
-    jv arg = jv_array_get(jv_copy(jargv), i);
+
+  jv_array_foreach(jargv, i, arg) {
     if (jv_get_kind(arg) != JV_KIND_STRING) {
+      jv_free(arg);  // Sanity check: is this correct?
       retjv = jv_invalid_with_msg(jv_string("execv args must be array of strings"));
       goto err;
     }
     argv[i] = jv_string_value(arg);
-    jv_free(arg);
+    jv_free(arg);  // Sanity check: is this correct?
   }
+
   argv[argc] = NULL;
 
   if (0 != pipe(tosh)) {
