@@ -1,0 +1,41 @@
+#!/bin/sh -x
+
+. "${0%/*}/setup" "$@"
+
+$VALGRIND $Q $JQ -ne '("foo" | system("base64") | trim) == "Zm9v"'
+printf '"foo"' | $VALGRIND $Q $JQ -e '(system("base64") | trim) == "Zm9v"'
+$VALGRIND $Q $JQ -ne '("..." | system("printf \"\"")) == ""'
+$VALGRIND $Q $JQ -ne '("hello" | system("sed -e s/l/x/ | tr a-z A-Z") | trim) == "HEXLO"'
+$VALGRIND $Q $JQ -ne '["foo", "bar"] | map(system("base64") | trim) == ["Zm9v", "YmFy"]'
+$VALGRIND $Q $JQ -ne '[
+  {data: "foo", cmd: "base64"},
+  {data: "Hello", cmd: "tr a-z A-Z"}
+] | map(.cmd as $cmd | .data | system($cmd) | trim) == ["Zm9v", "HELLO"]'
+
+
+$VALGRIND $Q $JQ -necsR '
+  (["foo\nbar\nflimf\n" | msystem("sed -e s/f/x/p")])
+  == ["xoo","xoo","bar","xlimf","xlimf"]
+'
+$VALGRIND $Q $JQ -necsR '
+  (["foo","bar","flimf"] | map(msystem("grep f || true")))
+  == ["foo", "flimf"]
+'
+$VALGRIND $Q $JQ -necsR '
+  (["foo","bar","flimf"] | map(system("grep f || true")))
+  == ["foo\n", "", "flimf\n"]
+'
+
+
+# Stress test poll(2) use in system
+f="$(mktemp)"
+f2="$(mktemp)"
+f3="$(mktemp)"
+trap "rm -f $f $f2 $f3" EXIT
+</dev/urandom base64 | head -c 10000000 > "$f"
+<"$f" $VALGRIND $Q $JQ -sR | $VALGRIND $Q $JQ -j 'system("tr a-j A-J | tr k-z K-Z")' > "$f2"
+<"$f" tr a-z A-Z >"$f3"
+diff -u "$f2" "$f3"
+
+
+exit 0
