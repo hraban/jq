@@ -500,7 +500,9 @@ static char BUF[BUF_SIZE];
 /**
  * After a fork, this function actually execs to the shell, as the child.
  */
-[[noreturn]] static void exec_child(const int fromsh[2], const int tosh[2], const char *sh) {
+[[noreturn]]
+static void exec_child(const int fromsh[2], const int tosh[2], const char *path,
+                       const char *const argv[]) {
   if (0 != close(1)) {
     perror("Error closing child stdout");
     _exit(1);
@@ -533,12 +535,13 @@ static char BUF[BUF_SIZE];
     perror("Error closing original pipe read fd");
     _exit(1);
   }
-  execl("/bin/sh", "sh", "-c", sh, NULL);
+  // Cast because we trust that execv won’t try and change the characters. 🤞
+  execv(path, (char * const *)argv);
   perror("Error executing child command");
   _exit(1);
 }
 
-static jv f_system(jq_state *jq, jv input, jv sh) {
+static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   int tosh[2] = {-1, -1};
   int fromsh[2] = {-1, -1};
   jv retjv = {}; // Does this actually 0-initialize the struct on the stack?
@@ -556,12 +559,39 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
 
   struct pollfd poll_fds[2];
 
+  const char **argv = NULL;
+  int argc = 0;
+
   if (jv_get_kind(input) != JV_KIND_STRING) {
-    return type_error(input, "only strings can be parsed");
+    return type_error(input, "only strings can be sent as stdin");
+  }
+  if (jv_get_kind(path) != JV_KIND_STRING) {
+    return type_error(input, "execv path must be a string");
   }
 
   input_b = jv_string_value(input);
   tosh_len = jv_string_length_bytes(jv_copy(input));
+
+  if (jv_get_kind(jargv) != JV_KIND_ARRAY) {
+    return type_error(input, "execv argv must be an array of strings");
+  }
+  argc = jv_array_length(jv_copy(jargv));
+  argv = malloc(sizeof(*argv) * (argc + 1));
+  if (NULL == argv) {
+    retjv = jv_invalid_with_msg(jv_string_concat(
+        jv_string("execv: failed to malloc argv: "), jv_string(strerror(errno))));
+    goto err;
+  }
+  for (int i = 0; i < argc; i++) {
+    jv arg = jv_array_get(jv_copy(jargv), i);
+    if (jv_get_kind(arg) != JV_KIND_STRING) {
+      retjv = jv_invalid_with_msg(jv_string("execv args must be array of strings"));
+      goto err;
+    }
+    argv[i] = jv_string_value(arg);
+    jv_free(arg);
+  }
+  argv[argc] = NULL;
 
   if (0 != pipe(tosh)) {
     retjv = jv_invalid_with_msg(jv_string_concat(
@@ -583,9 +613,10 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): failed to fork(): "), jv_string(strerror(errno))));
     goto err;
-  } else if (pid == 0) {
+  } else if (pid == 0)
+  {
     // I am child
-    exec_child(fromsh, tosh, jv_string_value(sh));
+    exec_child(fromsh, tosh, jv_string_value(path), argv);
     abort();
   }
 
@@ -716,7 +747,11 @@ static jv f_system(jq_state *jq, jv input, jv sh) {
 
 err:
   jv_free(input);
-  jv_free(sh);
+  jv_free(path);
+  jv_free(jargv);
+  free(argv);
+  free(tos);
+
   // Clean up any potentially allocated resources.  Assumes that retjv is
   // already set.  Any errors encountered here won’t affect the function
   // outcome, beyond an error message to stderr.
@@ -737,9 +772,6 @@ err:
   }
   if (tosh[1] != -1 && 0 != close(tosh[1])) {
     perror("system(): failed to clean up write end of TO pipe");
-  }
-  if (NULL != tos) {
-    free(tos);
   }
 
   return retjv;
@@ -2237,7 +2269,7 @@ BINOPS
   CFUNC(f_json_parse, "fromjson", 1),
   CFUNC(f_tonumber, "tonumber", 1),
   CFUNC(f_toboolean, "toboolean", 1),
-  CFUNC(f_system, "system", 2),
+  CFUNC(f_execv, "execv", 3),
   CFUNC(f_tostring, "tostring", 1),
   CFUNC(f_keys, "keys", 1),
   CFUNC(f_keys_unsorted, "keys_unsorted", 1),

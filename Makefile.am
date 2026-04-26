@@ -140,7 +140,7 @@ endif
 
 ### Tests (make check)
 
-TESTS = tests/mantest tests/jqtest tests/shtest tests/systemtest tests/utf8test tests/base64test tests/uritest
+TESTS = tests/mantest tests/jqtest tests/shtest tests/execvtest tests/utf8test tests/base64test tests/uritest
 if !WIN32
 TESTS += tests/optionaltest
 endif
