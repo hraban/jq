@@ -28,14 +28,42 @@ $VALGRIND $Q $JQ -necsR '
 
 
 # Stress test poll(2) use in system
-f="$(mktemp)"
-f2="$(mktemp)"
-f3="$(mktemp)"
-trap "rm -f $f $f2 $f3" EXIT
+d="$(mktemp -d)"
+f="$d/a"
+f2="$d/b"
+f3="$d/c"
+trap "rm -rf $d" EXIT
 </dev/urandom base64 | head -c 10000000 > "$f"
 <"$f" $VALGRIND $Q $JQ -sR | $VALGRIND $Q $JQ -j 'system("tr a-j A-J | tr k-z K-Z")' > "$f2"
 <"$f" tr a-z A-Z >"$f3"
 diff -u "$f2" "$f3"
+
+
+# Underlying execv test needs a full path, can’t rely on anything existing at a
+# specific path like /bin/echo because of idiosyncratic distributions like
+# NixOS.  Compile a C program on the fly to get access to argv[0] for real
+# testing of execv’s implementation in jq.
+>"$f.c" cat <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+
+int
+main(int argc, const char *argv[]) {
+  const char * sep = "";
+  printf("[");
+  for (int i = 0; i < argc; i++) {
+	printf("%s%s", sep, argv[i]);
+	sep = ", ";
+  }
+  printf("]");
+  return 0;
+}
+EOF
+$CC "$f.c" -o "$f"
+$VALGRIND $Q $JQ --arg path "$f" -ne '
+  ("abc" | execv($path; ["foo", "bar   bam", "quux"]))
+  == "[foo, bar   bam, quux]"
+'
 
 
 exit 0
