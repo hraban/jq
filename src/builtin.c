@@ -584,14 +584,14 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   if (NULL == argv) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("execv: failed to malloc argv: "), jv_string(strerror(errno))));
-    goto err;
+    goto out;
   }
 
   jv_array_foreach(jargv, i, arg) {
     if (jv_get_kind(arg) != JV_KIND_STRING) {
       jv_free(arg);  // Sanity check: is this correct?
       retjv = jv_invalid_with_msg(jv_string("execv args must be array of strings"));
-      goto err;
+      goto out;
     }
     argv[i] = jv_string_value(arg);
     jv_free(arg);  // Sanity check: is this correct?
@@ -602,23 +602,23 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   if (0 != pipe(tosh)) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): Failed to create TO pipe: "), jv_string(strerror(errno))));
-    goto err;
+    goto out;
   }
   if (-1 == fcntl(tosh[1], F_SETFL, fcntl(tosh[1], F_GETFL) | O_NONBLOCK)) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): Failed to mark TO pipe nonblocking: "), jv_string(strerror(errno))));
-    goto err;
+    goto out;
   }
   if (0 != pipe(fromsh)) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): Failed to create FROM pipe: "), jv_string(strerror(errno))));
-    goto err;
+    goto out;
   }
   pid_t pid = fork();
   if (pid == -1) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): failed to fork(): "), jv_string(strerror(errno))));
-    goto err;
+    goto out;
   } else if (pid == 0)
   {
     // I am child
@@ -631,14 +631,14 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): error closing child's write end: "),
         jv_string(strerror(errno))));
-    goto err;
+    goto out;
   }
   fromsh[1] = -1;
   if (0 != close(tosh[0])) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): error closing parent's own read end: "),
         jv_string(strerror(errno))));
-    goto err;
+    goto out;
   }
   tosh[0] = -1;
 
@@ -654,7 +654,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
     if (-1 == ready) {
       retjv = jv_invalid_with_msg(jv_string_concat(
           jv_string("system(): poll(): "), jv_string(strerror(errno))));
-      goto err;
+      goto out;
     }
 
     if (poll_fds[1].fd >= 0 && poll_fds[1].revents != 0) {
@@ -664,7 +664,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
           retjv = jv_invalid_with_msg(
               jv_string_concat(jv_string("system(): writing to child: "),
                                jv_string(strerror(errno))));
-          goto err;
+          goto out;
         }
         tosh_len -= written;
         input_b += written;
@@ -673,7 +673,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
           retjv = jv_invalid_with_msg(
               jv_string_concat(jv_string("system(): closing tosh pipe: "),
                                jv_string(strerror(errno))));
-          goto err;
+          goto out;
         }
         poll_fds[1].fd = -1;
       }
@@ -688,7 +688,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
           retjv = jv_invalid_with_msg(
               jv_string_concat(jv_string("system(): reading from child: "),
                                jv_string(strerror(errno))));
-          goto err;
+          goto out;
         }
         // Copy into our placeholder buffer which is grown exponentially
         // Am I stupid? Overflow / underflow?
@@ -699,7 +699,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
             retjv = jv_invalid_with_msg(jv_string_concat(
                 jv_string("system(): allocating buffer for child data: "),
                 jv_string(strerror(errno))));
-            goto err;
+            goto out;
           }
           tos = tmp;
         }
@@ -711,7 +711,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
           retjv = jv_invalid_with_msg(
               jv_string_concat(jv_string("system(): closing fromsh pipe: "),
                                jv_string(strerror(errno))));
-          goto err;
+          goto out;
         }
         poll_fds[0].fd = -1;
       }
@@ -724,22 +724,22 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): failed to wait for child exit status"),
         jv_string(strerror(errno))));
-    goto err;
+    goto out;
   }
   if (status != 0) {
     if (WIFEXITED(status)) {
       retjv = jv_invalid_with_msg(jv_string_fmt(
           "Child exited with non-0 status: %d", WEXITSTATUS(status)));
-      goto err;
+      goto out;
     }
     if (WIFSIGNALED(status)) {
       retjv = jv_invalid_with_msg(
           jv_string_fmt("Child killed by signal: %d", WTERMSIG(status)));
-      goto err;
+      goto out;
     }
     // I think this should never happen?
     retjv = jv_invalid_with_msg(jv_string("Unexpected child exit condition"));
-    goto err;
+    goto out;
   }
 
   // Special handling for if the stdout of the subshell was 0 bytes.
@@ -751,7 +751,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
     retjv = jv_string_sized(tos, offset);
   }
 
-err:
+out:
   jv_free(input);
   jv_free(path);
   jv_free(jargv);
