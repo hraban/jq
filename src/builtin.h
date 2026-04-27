@@ -5,7 +5,7 @@
 #include "bytecode.h"
 #include "compile.h"
 
-int builtins_bind(jq_state *, block*);
+int builtins_bind(jq_state *, block *);
 
 #define BINOPS \
   BINOP(plus) \

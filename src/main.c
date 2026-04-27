@@ -102,6 +102,7 @@ static void usage(int code, int keep_it_short) {
       "                            string values;\n"
       "      --jsonargs            consume remaining arguments as positional\n"
       "                            JSON values;\n"
+      "      --allow-exec          allow execv(), external calls (dangerous!)\n"
       "  -e, --exit-status         set exit status code based on the output;\n"
 #ifdef WIN32
       "  -b, --binary              open input/output streams in binary mode;\n"
@@ -159,6 +160,7 @@ enum {
   SEQ                   = 16384,
   /* debugging only */
   DUMP_DISASM           = 32768,
+  ALLOW_EXEC            = 0x10000,
 };
 
 enum {
@@ -500,6 +502,8 @@ int main(int argc, char* argv[]) {
             program_arguments = jv_object_set(program_arguments, jv_string(argv[i+1]), data);
           }
           i += 2; // skip the next two arguments
+        } else if (isoption(&text,  0,  "allow-exec", is_short)) {
+          options |= ALLOW_EXEC;
         } else if (isoption(&text,  0,  "debug-dump-disasm", is_short)) {
           options |= DUMP_DISASM;
         } else if (isoption(&text,  0,  "debug-trace=all", is_short)) {
@@ -595,6 +599,8 @@ int main(int argc, char* argv[]) {
 #endif
 
   if (!program) usage(2, 1);
+
+  jq_set_enable_exec(jq, options & ALLOW_EXEC);
 
   if (options & FROM_FILE) {
     char *program_origin = strdup(program);

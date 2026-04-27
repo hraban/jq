@@ -2,26 +2,26 @@
 
 . "${0%/*}/setup" "$@"
 
-$VALGRIND $Q $JQ -ne '("foo" | system("base64") | trim) == "Zm9v"'
-printf '"foo"' | $VALGRIND $Q $JQ -e '(system("base64") | trim) == "Zm9v"'
-$VALGRIND $Q $JQ -ne '("..." | system("printf \"\"")) == ""'
-$VALGRIND $Q $JQ -ne '("hello" | system("sed -e s/l/x/ | tr a-z A-Z") | trim) == "HEXLO"'
-$VALGRIND $Q $JQ -ne '["foo", "bar"] | map(system("base64") | trim) == ["Zm9v", "YmFy"]'
-$VALGRIND $Q $JQ -ne '[
+$VALGRIND $Q $JQ --allow-exec -ne '("foo" | system("base64") | trim) == "Zm9v"'
+printf '"foo"' | $VALGRIND $Q $JQ --allow-exec -e '(system("base64") | trim) == "Zm9v"'
+$VALGRIND $Q $JQ --allow-exec -ne '("..." | system("printf \"\"")) == ""'
+$VALGRIND $Q $JQ --allow-exec -ne '("hello" | system("sed -e s/l/x/ | tr a-z A-Z") | trim) == "HEXLO"'
+$VALGRIND $Q $JQ --allow-exec -ne '["foo", "bar"] | map(system("base64") | trim) == ["Zm9v", "YmFy"]'
+$VALGRIND $Q $JQ --allow-exec -ne '[
   {data: "foo", cmd: "base64"},
   {data: "Hello", cmd: "tr a-z A-Z"}
 ] | map(.cmd as $cmd | .data | system($cmd) | trim) == ["Zm9v", "HELLO"]'
 
 
-$VALGRIND $Q $JQ -necsR '
+$VALGRIND $Q $JQ --allow-exec -necsR '
   (["foo\nbar\nflimf\n" | msystem("sed -e s/f/x/p")])
   == ["xoo","xoo","bar","xlimf","xlimf"]
 '
-$VALGRIND $Q $JQ -necsR '
+$VALGRIND $Q $JQ --allow-exec -necsR '
   (["foo","bar","flimf"] | map(msystem("grep f || true")))
   == ["foo", "flimf"]
 '
-$VALGRIND $Q $JQ -necsR '
+$VALGRIND $Q $JQ --allow-exec -necsR '
   (["foo","bar","flimf"] | map(system("grep f || true")))
   == ["foo\n", "", "flimf\n"]
 '
@@ -34,7 +34,7 @@ f2="$d/b"
 f3="$d/c"
 trap "rm -rf $d" EXIT
 </dev/urandom base64 | head -c 10000000 > "$f"
-<"$f" $VALGRIND $Q $JQ -sR | $VALGRIND $Q $JQ -j 'system("tr a-j A-J | tr k-z K-Z")' > "$f2"
+<"$f" $VALGRIND $Q $JQ -sR | $VALGRIND $Q $JQ --allow-exec -j 'system("tr a-j A-J | tr k-z K-Z")' > "$f2"
 <"$f" tr a-z A-Z >"$f3"
 diff -u "$f2" "$f3"
 
@@ -60,10 +60,15 @@ main(int argc, const char *argv[]) {
 }
 EOF
 $CC "$f.c" -o "$f"
-$VALGRIND $Q $JQ --arg path "$f" -ne '
+$VALGRIND $Q $JQ --allow-exec --arg path "$f" -ne '
   ("abc" | execv($path; ["foo", "bar   bam", "quux"]))
   == "[foo, bar   bam, quux]"
 '
+
+# Should fail when not passed the --allow flag
+! $VALGRIND $Q $JQ -ne '"" | system("echo hello")'
+! $VALGRIND $Q $JQ -ne '"" | msystem("echo hello")'
+! $VALGRIND $Q $JQ -ne '"" | execv("/bin/sh"; ["sh", "-c", "echo hello"])'
 
 
 exit 0

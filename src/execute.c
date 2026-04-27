@@ -48,6 +48,8 @@ struct jq_state {
   void *debug_cb_data;
   jq_msg_cb stderr_cb;
   void *stderr_cb_data;
+
+  int enable_execv;
 };
 
 struct closure {
@@ -1320,6 +1322,19 @@ void jq_set_stderr_cb(jq_state *jq, jq_msg_cb cb, void *data) {
 void jq_get_stderr_cb(jq_state *jq, jq_msg_cb *cb, void **data) {
   *cb = jq->stderr_cb;
   *data = jq->stderr_cb_data;
+}
+
+// Arbitrary magic value for enable_exec flag to ensure we don’t accidentally
+// enable exec from a use-after-free bug, just because the failure mode is so
+// dangerous.
+#define ENABLE_EXEC_MAGIC 0xbeef
+
+void jq_set_enable_exec(jq_state *jq, int enable) {
+  jq->enable_execv = enable ? ENABLE_EXEC_MAGIC : 0;
+}
+
+int jq_get_enable_exec(jq_state *jq) {
+  return jq->enable_execv == ENABLE_EXEC_MAGIC;
 }
 
 void

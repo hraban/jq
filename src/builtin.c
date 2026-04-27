@@ -562,6 +562,10 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   const char **argv = NULL;
   int argc = 0;
 
+  if (!jq_get_enable_exec(jq)) {
+    return jv_invalid_with_msg(jv_string("execv() disabled, pass --allow-exec"));
+  }
+
   if (jv_get_kind(input) != JV_KIND_STRING) {
     return type_error(input, "only strings can be sent as stdin");
   }
