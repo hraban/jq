@@ -541,23 +541,109 @@ static void exec_child(const int fromsh[2], const int tosh[2], const char *path,
   _exit(1);
 }
 
+struct write_state {
+  struct pollfd *poll;
+  // Length of the write buffer
+  int tosh_len;
+  // Data to send to the child process
+  const char *buf;
+};
+
+/**
+ * Write data when poll(2) has indicated the child can be written to.
+ */
+static int write_to_child(struct write_state *ws, jv *out) {
+  if ((ws->poll->revents & POLLOUT) && (0 < ws->tosh_len)) {
+    ssize_t written = write(ws->poll->fd, ws->buf, ws->tosh_len);
+    if (-1 == written) {
+      *out = jv_invalid_with_msg(
+          jv_string_concat(jv_string("system(): writing to child: "),
+                           jv_string(strerror(errno))));
+      return -1;
+    }
+    ws->tosh_len -= written;
+    ws->buf += written;
+  } else {
+    if (0 != close(ws->poll->fd)) {
+      *out = jv_invalid_with_msg(
+          jv_string_concat(jv_string("system(): closing tosh pipe: "),
+                           jv_string(strerror(errno))));
+      return -1;
+    }
+    ws->poll->fd = -1;
+  }
+
+  return 0;
+}
+
+struct read_state {
+  struct pollfd *poll;
+  // Placeholder buffer for eventually casting to jv_string
+  char *buf;
+  // Last valid byte in the placeholder buffer
+  size_t offset;
+  // Current size of the placeholder buffer
+  size_t capacity;
+};
+
+/**
+ * Read all data when poll(2) has indicated the child can be read from.
+ */
+static int read_from_child(struct read_state *rs, jv *out) {
+  int ret = 0;
+  if (rs->poll->revents & POLLIN) {
+    ret = read(rs->poll->fd, BUF, BUF_SIZE);
+    if (ret == -1) {
+      *out = jv_invalid_with_msg(
+          jv_string_concat(jv_string("system(): reading from child: "),
+                           jv_string(strerror(errno))));
+      return -1;
+    }
+    // Copy into our placeholder buffer which is grown exponentially
+    // Am I stupid? Overflow / underflow?
+    if (rs->offset + ret > rs->capacity) {
+      rs->capacity += rs->capacity == 0 ? BUF_SIZE : rs->capacity;
+      void *tmp = realloc(rs->buf, rs->capacity);
+      if (NULL == tmp) {
+        *out = jv_invalid_with_msg(jv_string_concat(
+            jv_string("system(): allocating buffer for child data: "),
+            jv_string(strerror(errno))));
+        return -1;
+      }
+      rs->buf = tmp;
+    }
+    memcpy(rs->buf + rs->offset, BUF, ret);
+    rs->offset += ret;
+  }
+  if (0 == ret) {
+    if (0 != close(rs->poll->fd)) {
+      *out = jv_invalid_with_msg(
+          jv_string_concat(jv_string("system(): closing fromsh pipe: "),
+                           jv_string(strerror(errno))));
+      return -1;
+    }
+    rs->poll->fd = -1;
+  }
+
+  return 0;
+}
+
 static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   int tosh[2] = {-1, -1};
   int fromsh[2] = {-1, -1};
   jv retjv = {}; // Does this actually 0-initialize the struct on the stack?
 
-  // Froms structures
-  // Placeholder buffer for eventually casting to jv_string
-  char *tos = NULL;
-  // Last valid byte in the placeholder buffer
-  size_t offset = 0;
-  // Current size of the placeholder buffer
-  size_t capacity = 0;
-
-  const char *input_b = NULL;
-  int tosh_len = 0;
-
   struct pollfd poll_fds[2];
+
+  struct read_state rs = {
+    .poll = &poll_fds[0],
+    .offset = 0,
+  };
+  struct write_state ws = {
+    .poll = &poll_fds[1],
+    .tosh_len = 0,
+    .buf = NULL,
+  };
 
   const char **argv = NULL;
   int argc = 0;
@@ -573,8 +659,8 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
     return type_error(input, "execv path must be a string");
   }
 
-  input_b = jv_string_value(input);
-  tosh_len = jv_string_length_bytes(jv_copy(input));
+  ws.buf = jv_string_value(input);
+  ws.tosh_len = jv_string_length_bytes(jv_copy(input));
 
   if (jv_get_kind(jargv) != JV_KIND_ARRAY) {
     return type_error(input, "execv argv must be an array of strings");
@@ -660,62 +746,14 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
     }
 
     if (poll_fds[1].fd >= 0 && poll_fds[1].revents != 0) {
-      if ((poll_fds[1].revents & POLLOUT) && (0 < tosh_len)) {
-        ssize_t written = write(poll_fds[1].fd, input_b, tosh_len);
-        if (-1 == written) {
-          retjv = jv_invalid_with_msg(
-              jv_string_concat(jv_string("system(): writing to child: "),
-                               jv_string(strerror(errno))));
-          goto out;
-        }
-        tosh_len -= written;
-        input_b += written;
-      } else {
-        if (0 != close(poll_fds[1].fd)) {
-          retjv = jv_invalid_with_msg(
-              jv_string_concat(jv_string("system(): closing tosh pipe: "),
-                               jv_string(strerror(errno))));
-          goto out;
-        }
-        poll_fds[1].fd = -1;
+      if (0 != write_to_child(&ws, &retjv)) {
+        goto out;
       }
     }
 
     if (poll_fds[0].fd >= 0 && poll_fds[0].revents != 0) {
-      int ret = 0;
-      if (poll_fds[0].revents & POLLIN) {
-        // Read from the child
-        ret = read(poll_fds[0].fd, BUF, BUF_SIZE);
-        if (ret == -1) {
-          retjv = jv_invalid_with_msg(
-              jv_string_concat(jv_string("system(): reading from child: "),
-                               jv_string(strerror(errno))));
-          goto out;
-        }
-        // Copy into our placeholder buffer which is grown exponentially
-        // Am I stupid? Overflow / underflow?
-        if (offset + ret > capacity) {
-          capacity += capacity == 0 ? BUF_SIZE : capacity;
-          void *tmp = realloc(tos, capacity);
-          if (NULL == tmp) {
-            retjv = jv_invalid_with_msg(jv_string_concat(
-                jv_string("system(): allocating buffer for child data: "),
-                jv_string(strerror(errno))));
-            goto out;
-          }
-          tos = tmp;
-        }
-        memcpy(tos + offset, BUF, ret);
-        offset += ret;
-      }
-      if (0 == ret) {
-        if (0 != close(poll_fds[0].fd)) {
-          retjv = jv_invalid_with_msg(
-              jv_string_concat(jv_string("system(): closing fromsh pipe: "),
-                               jv_string(strerror(errno))));
-          goto out;
-        }
-        poll_fds[0].fd = -1;
+      if (0 != read_from_child(&rs, &retjv)) {
+        goto out;
       }
     }
   }
@@ -745,12 +783,12 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   }
 
   // Special handling for if the stdout of the subshell was 0 bytes.
-  if (offset == 0) {
+  if (rs.offset == 0) {
     // .. is this necessary? I’m afraid to call jv_string_sized(NULL, 0)
     // although it could technically be legal?
     retjv = jv_string("");
   } else {
-    retjv = jv_string_sized(tos, offset);
+    retjv = jv_string_sized(rs.buf, rs.offset);
   }
 
 out:
@@ -758,7 +796,7 @@ out:
   jv_free(path);
   jv_free(jargv);
   free(argv);
-  free(tos);
+  free(rs.buf);
 
   // Clean up any potentially allocated resources.  Assumes that retjv is
   // already set.  Any errors encountered here won’t affect the function
