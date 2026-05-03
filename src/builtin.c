@@ -594,7 +594,9 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
       goto out;
     }
     argv[i] = jv_string_value(arg);
-    jv_free(arg);  // Sanity check: is this correct?
+    // Sanity check for JQ maintainers: is this correct?  I think so:
+    // jv_array_foreach bumps the refcount of each x it returns, right?
+    jv_free(arg);
   }
 
   argv[argc] = NULL;
