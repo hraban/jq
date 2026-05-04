@@ -628,6 +628,32 @@ static int read_from_child(struct read_state *rs, jv *out) {
   return 0;
 }
 
+static int check_child_exit_status(pid_t pid, jv *out) {
+  int status = 0;
+  if (-1 == waitpid(pid, &status, 0)) {
+    *out = jv_invalid_with_msg(jv_string_concat(
+        jv_string("system(): failed to wait for child exit status"),
+        jv_string(strerror(errno))));
+    return -1;
+  }
+  if (status != 0) {
+    if (WIFEXITED(status)) {
+      *out = jv_invalid_with_msg(jv_string_fmt(
+          "Child exited with non-0 status: %d", WEXITSTATUS(status)));
+      return -1;
+    }
+    if (WIFSIGNALED(status)) {
+      *out = jv_invalid_with_msg(
+          jv_string_fmt("Child killed by signal: %d", WTERMSIG(status)));
+      return -1;
+    }
+    // I think this should never happen?
+    *out = jv_invalid_with_msg(jv_string("Unexpected child exit condition"));
+    return -1;
+  }
+  return 0;
+}
+
 static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   int tosh[2] = {-1, -1};
   int fromsh[2] = {-1, -1};
@@ -647,6 +673,8 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
 
   const char **argv = NULL;
   int argc = 0;
+
+  pid_t pid = 0;
 
   if (!jq_get_enable_exec(jq)) {
     return jv_invalid_with_msg(jv_string("execv() disabled, pass --allow-exec"));
@@ -702,7 +730,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
         jv_string("system(): Failed to create FROM pipe: "), jv_string(strerror(errno))));
     goto out;
   }
-  pid_t pid = fork();
+  pid = fork();
   if (pid == -1) {
     retjv = jv_invalid_with_msg(jv_string_concat(
         jv_string("system(): failed to fork(): "), jv_string(strerror(errno))));
@@ -759,26 +787,7 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   }
 
   // Check exit status of child
-  int status = 0;
-  if (-1 == waitpid(pid, &status, 0)) {
-    retjv = jv_invalid_with_msg(jv_string_concat(
-        jv_string("system(): failed to wait for child exit status"),
-        jv_string(strerror(errno))));
-    goto out;
-  }
-  if (status != 0) {
-    if (WIFEXITED(status)) {
-      retjv = jv_invalid_with_msg(jv_string_fmt(
-          "Child exited with non-0 status: %d", WEXITSTATUS(status)));
-      goto out;
-    }
-    if (WIFSIGNALED(status)) {
-      retjv = jv_invalid_with_msg(
-          jv_string_fmt("Child killed by signal: %d", WTERMSIG(status)));
-      goto out;
-    }
-    // I think this should never happen?
-    retjv = jv_invalid_with_msg(jv_string("Unexpected child exit condition"));
+  if (-1 == check_child_exit_status(pid, &retjv)) {
     goto out;
   }
 
