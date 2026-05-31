@@ -243,7 +243,7 @@ def JOIN($idx; stream; idx_expr; join_expr):
 def IN(s): any(s == .; .);
 def IN(src; s): any(src == s; .);
 
-# Imitate system(3) using execv
-def system(cmd): execv("/bin/sh"; ["sh", "-c", cmd]);
+# Imitate system(3) using execvp
+def system(cmd): execvp("/bin/sh"; ["sh", "-c", cmd]);
 # Monadic system(): every line on stdout of subcommand becomes an element in pipeline
 def msystem(cmd): system(cmd) | trim | split("\n") | .[];

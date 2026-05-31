@@ -39,10 +39,10 @@ trap "rm -rf $d" EXIT
 diff -u "$f2" "$f3"
 
 
-# Underlying execv test needs a full path, can’t rely on anything existing at a
+# Underlying exec test needs a full path, can’t rely on anything existing at a
 # specific path like /bin/echo because of idiosyncratic distributions like
 # NixOS.  Compile a C program on the fly to get access to argv[0] for real
-# testing of execv’s implementation in jq.
+# testing of execvp’s implementation in jq.
 >"$f.c" cat <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,14 +61,14 @@ main(int argc, const char *argv[]) {
 EOF
 $CC "$f.c" -o "$f"
 $VALGRIND $Q $JQ --allow-exec --arg path "$f" -ne '
-  ("abc" | execv($path; ["foo", "bar   bam", "quux"]))
+  ("abc" | execvp($path; ["foo", "bar   bam", "quux"]))
   == "[foo, bar   bam, quux]"
 '
 
 # Should fail when not passed the --allow flag
 ! $VALGRIND $Q $JQ -ne '"" | system("echo hello")'
 ! $VALGRIND $Q $JQ -ne '"" | msystem("echo hello")'
-! $VALGRIND $Q $JQ -ne '"" | execv("/bin/sh"; ["sh", "-c", "echo hello"])'
+! $VALGRIND $Q $JQ -ne '"" | execvp("/bin/sh"; ["sh", "-c", "echo hello"])'
 
 
 exit 0

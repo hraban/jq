@@ -502,7 +502,7 @@ static char BUF[BUF_SIZE];
  * After a fork, this function actually execs to the shell, as the child.
  */
 [[noreturn]]
-static void exec_child(const int fromsh[2], const int tosh[2], const char *path,
+static void exec_child(const int fromsh[2], const int tosh[2], const char *file,
                        const char *const argv[]) {
   if (0 != close(1)) {
     perror("Error closing child stdout");
@@ -536,8 +536,8 @@ static void exec_child(const int fromsh[2], const int tosh[2], const char *path,
     perror("Error closing original pipe read fd");
     _exit(1);
   }
-  // Cast because we trust that execv won’t try and change the characters. 🤞
-  execv(path, (char * const *)argv);
+  // Cast because we trust that execvp won’t try and change the characters. 🤞
+  execvp(file, (char * const *)argv);
   perror("Error executing child command");
   _exit(1);
 }
@@ -655,7 +655,7 @@ static int check_child_exit_status(pid_t pid, jv *out) {
   return 0;
 }
 
-static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
+static jv f_execvp(jq_state *jq, jv input, jv path, jv jargv) {
   int tosh[2] = {-1, -1};
   int fromsh[2] = {-1, -1};
   jv retjv = {}; // Does this actually 0-initialize the struct on the stack?
@@ -678,34 +678,34 @@ static jv f_execv(jq_state *jq, jv input, jv path, jv jargv) {
   pid_t pid = 0;
 
   if (!jq_get_enable_exec(jq)) {
-    return jv_invalid_with_msg(jv_string("execv() disabled, pass --allow-exec"));
+    return jv_invalid_with_msg(jv_string("execvp() disabled, pass --allow-exec"));
   }
 
   if (jv_get_kind(input) != JV_KIND_STRING) {
     return type_error(input, "only strings can be sent as stdin");
   }
   if (jv_get_kind(path) != JV_KIND_STRING) {
-    return type_error(input, "execv path must be a string");
+    return type_error(input, "execvp path must be a string");
   }
 
   ws.buf = jv_string_value(input);
   ws.tosh_len = jv_string_length_bytes(jv_copy(input));
 
   if (jv_get_kind(jargv) != JV_KIND_ARRAY) {
-    return type_error(input, "execv argv must be an array of strings");
+    return type_error(input, "execvp argv must be an array of strings");
   }
   argc = jv_array_length(jv_copy(jargv));
   argv = malloc(sizeof(*argv) * (argc + 1));
   if (NULL == argv) {
     retjv = jv_invalid_with_msg(jv_string_concat(
-        jv_string("execv: failed to malloc argv: "), jv_string(strerror(errno))));
+        jv_string("execvp: failed to malloc argv: "), jv_string(strerror(errno))));
     goto out;
   }
 
   jv_array_foreach(jargv, i, arg) {
     if (jv_get_kind(arg) != JV_KIND_STRING) {
       jv_free(arg);  // Sanity check: is this correct?
-      retjv = jv_invalid_with_msg(jv_string("execv args must be array of strings"));
+      retjv = jv_invalid_with_msg(jv_string("execvp args must be array of strings"));
       goto out;
     }
     argv[i] = jv_string_value(arg);
@@ -2325,7 +2325,7 @@ BINOPS
   CFUNC(f_json_parse, "fromjson", 1),
   CFUNC(f_tonumber, "tonumber", 1),
   CFUNC(f_toboolean, "toboolean", 1),
-  CFUNC(f_execv, "execv", 3),
+  CFUNC(f_execvp, "execvp", 3),
   CFUNC(f_tostring, "tostring", 1),
   CFUNC(f_keys, "keys", 1),
   CFUNC(f_keys_unsorted, "keys_unsorted", 1),

@@ -102,7 +102,7 @@ static void usage(int code, int keep_it_short) {
       "                            string values;\n"
       "      --jsonargs            consume remaining arguments as positional\n"
       "                            JSON values;\n"
-      "      --allow-exec          allow execv(), external calls (dangerous!)\n"
+      "      --allow-exec          allow exec, external calls (dangerous!)\n"
       "  -e, --exit-status         set exit status code based on the output;\n"
 #ifdef WIN32
       "  -b, --binary              open input/output streams in binary mode;\n"

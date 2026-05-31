@@ -49,7 +49,7 @@ struct jq_state {
   jq_msg_cb stderr_cb;
   void *stderr_cb_data;
 
-  int enable_execv;
+  int enable_exec;
 };
 
 struct closure {
@@ -1330,11 +1330,11 @@ void jq_get_stderr_cb(jq_state *jq, jq_msg_cb *cb, void **data) {
 #define ENABLE_EXEC_MAGIC 0xbeef
 
 void jq_set_enable_exec(jq_state *jq, int enable) {
-  jq->enable_execv = enable ? ENABLE_EXEC_MAGIC : 0;
+  jq->enable_exec = enable ? ENABLE_EXEC_MAGIC : 0;
 }
 
 int jq_get_enable_exec(jq_state *jq) {
-  return jq->enable_execv == ENABLE_EXEC_MAGIC;
+  return jq->enable_exec == ENABLE_EXEC_MAGIC;
 }
 
 void
