@@ -11,6 +11,7 @@ $VALGRIND $Q $JQ --allow-exec -ne '[
   {data: "foo", cmd: "base64"},
   {data: "Hello", cmd: "tr a-z A-Z"}
 ] | map(.cmd as $cmd | .data | system($cmd) | trim) == ["Zm9v", "HELLO"]'
+$VALGRIND $Q $JQ --allow-exec -ne '"foobar" | execvp("tr"; ["tr", "a-z", "A-Z"]) == "FOOBAR"'
 
 
 $VALGRIND $Q $JQ --allow-exec -necsR '
